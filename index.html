@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SASEcloudDC Map — preview (with AWS)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body, #map { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+
+    #panel {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 1000;
+      background: rgba(255,255,255,0.97);
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+      padding: 10px 12px;
+      width: 230px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    #panel h1 {
+      font-size: 14px;
+      margin: 0 0 8px 0;
+    }
+    #panel .controls {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    #panel .controls button {
+      flex: 1;
+      font-size: 11px;
+      padding: 4px 6px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: #f5f5f5;
+      cursor: pointer;
+    }
+    .provider-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 0;
+      font-size: 13px;
+    }
+    .provider-row input { cursor: pointer; }
+    .provider-row label { cursor: pointer; display: flex; align-items: center; gap: 6px; flex: 1; }
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      border: 1.5px solid rgba(0,0,0,0.4);
+      flex-shrink: 0;
+      display: inline-block;
+    }
+    .count {
+      color: #888;
+      font-size: 11px;
+      margin-left: auto;
+    }
+    .new-badge {
+      background: #ff9900;
+      color: #232f3e;
+      font-size: 9px;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 1px 4px;
+      margin-left: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="panel">
+    <h1>Providers</h1>
+    <div class="controls">
+      <button id="select-all">All</button>
+      <button id="select-none">None</button>
+    </div>
+    <div id="provider-list"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // provider_name -> { friendlyName, color, defaultOn }
+    const PROVIDERS = {
+      aws:          { label: "AWS (Amazon Web Services)", color: "#ff9900", isNew: true,  defaultOn: true },
+      azure:        { label: "Microsoft Azure",          color: "#0078d4", isNew: true,  defaultOn: true },
+      gcp:          { label: "Google Cloud Platform",    color: "#34a853", isNew: true,  defaultOn: true },
+      cloudflare:   { label: "Cloudflare",                 color: "#f6821f", defaultOn: true },
+      zscaler:      { label: "Zscaler",                    color: "#0a4c92", defaultOn: true },
+      netskope:     { label: "Netskope",                   color: "#e4572e", defaultOn: true },
+      cisco:        { label: "Cisco Umbrella",              color: "#00bceb", defaultOn: true },
+      paloalto:     { label: "Prisma Access (PANW)",        color: "#fa582d", defaultOn: true },
+      fortisase:    { label: "Fortinet (FortiSASE)",        color: "#ee3124", defaultOn: true },
+      iboss:        { label: "iboss",                       color: "#6a1b9a", defaultOn: true },
+      checkpoint:   { label: "Check Point Harmony",         color: "#ff5c00", defaultOn: true },
+      catonetworks: { label: "Cato Networks",               color: "#00a4bd", defaultOn: true },
+      oracle:       { label: "Oracle Cloud Infrastructure", color: "#f80000", defaultOn: true },
+      fastly:       { label: "Fastly",                      color: "#8c1aff", defaultOn: true },
+    };
+
+    const map = L.map('map').setView([20, 10], 2);
+    window.map = map;
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const layers = {};     // provider_name -> L.geoJSON layer
+    const counts = {};     // provider_name -> feature count
+    window.layers = layers;
+
+    function makeMarker(color) {
+      return (feature, latlng) =>
+        L.circleMarker(latlng, {
+          radius: 6,
+          fillColor: color,
+          color: '#222',
+          weight: 1,
+          fillOpacity: 0.85,
+        });
+    }
+
+    async function loadProvider(name, cfg) {
+      try {
+        const res = await fetch(`data/${name}.json`);
+        if (!res.ok) throw new Error(res.status);
+        const geojson = await res.json();
+        const layer = L.geoJSON(geojson, {
+          pointToLayer: makeMarker(cfg.color),
+          onEachFeature: (feature, lyr) => {
+            const p = feature.properties || {};
+            lyr.bindTooltip(
+              `<b>${cfg.label}</b><br/>${p.city || ''}${p.countryCode ? ' (' + p.countryCode + ')' : ''}${p.siteCode ? '<br/><code>' + p.siteCode + '</code>' : ''}${p.availabilityZones ? '<br/>' + p.availabilityZones + ' AZ' + (p.availabilityZones > 1 ? 's' : '') : ''}`
+            );
+          },
+        });
+        layers[name] = layer;
+        counts[name] = geojson.features.length;
+        if (cfg.defaultOn) layer.addTo(map);
+        return true;
+      } catch (e) {
+        console.warn(`Could not load ${name}:`, e);
+        return false;
+      }
+    }
+
+    function renderPanel() {
+      const list = document.getElementById('provider-list');
+      list.innerHTML = '';
+      for (const [name, cfg] of Object.entries(PROVIDERS)) {
+        if (!(name in layers)) continue;
+        const row = document.createElement('div');
+        row.className = 'provider-row';
+        row.innerHTML = `
+          <label>
+            <input type="checkbox" data-provider="${name}" ${cfg.defaultOn ? 'checked' : ''} />
+            <span class="swatch" style="background:${cfg.color}"></span>
+            ${cfg.label}
+            ${cfg.isNew ? '<span class="new-badge">NEW</span>' : ''}
+            <span class="count">${counts[name] ?? ''}</span>
+          </label>
+        `;
+        list.appendChild(row);
+      }
+      list.querySelectorAll('input[type=checkbox]').forEach((input) => {
+        input.addEventListener('change', (e) => {
+          const name = e.target.dataset.provider;
+          if (e.target.checked) {
+            layers[name].addTo(map);
+          } else {
+            map.removeLayer(layers[name]);
+          }
+        });
+      });
+    }
+
+    document.getElementById('select-all').addEventListener('click', () => {
+      document.querySelectorAll('#provider-list input[type=checkbox]').forEach((i) => {
+        if (!i.checked) { i.checked = true; i.dispatchEvent(new Event('change')); }
+      });
+    });
+    document.getElementById('select-none').addEventListener('click', () => {
+      document.querySelectorAll('#provider-list input[type=checkbox]').forEach((i) => {
+        if (i.checked) { i.checked = false; i.dispatchEvent(new Event('change')); }
+      });
+    });
+
+    (async () => {
+      await Promise.all(
+        Object.entries(PROVIDERS).map(([name, cfg]) => loadProvider(name, cfg))
+      );
+      renderPanel();
+      document.title = `SASEcloudDC Map preview (${Object.keys(layers).length} providers)`;
+    })();
+  </script>
+</body>
+</html>
