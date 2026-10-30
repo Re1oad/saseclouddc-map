@@ -69,10 +69,41 @@
       padding: 1px 4px;
       margin-left: 4px;
     }
+    .age-badge {
+      font-size: 9px;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 1px 4px;
+      margin-left: 4px;
+      white-space: nowrap;
+    }
+    .age-fresh { background: #dcf7dc; color: #1a7a1a; }
+    .age-aging { background: #fff2cc; color: #8a6d00; }
+    .age-stale { background: #fde0e0; color: #a3221b; }
+
+    #freshness-banner {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 1000;
+      max-width: 320px;
+      background: rgba(255,255,255,0.97);
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    #freshness-banner.ok { border-left: 4px solid #1a7a1a; }
+    #freshness-banner.warn { border-left: 4px solid #8a6d00; }
+    #freshness-banner.stale { border-left: 4px solid #a3221b; }
+    #freshness-banner strong { display: block; margin-bottom: 4px; }
+    #freshness-banner ul { margin: 4px 0 0 16px; padding: 0; }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div id="freshness-banner">Checking data freshness&hellip;</div>
   <div id="panel">
     <h1>Providers</h1>
     <div class="controls">
@@ -111,6 +142,72 @@
     const layers = {};     // provider_name -> L.geoJSON layer
     const counts = {};     // provider_name -> feature count
     window.layers = layers;
+
+    // Freshness thresholds, in days since each provider's data was last pulled.
+    const STALE_AFTER_DAYS = 30;
+    const AGING_AFTER_DAYS = 14;
+    let meta = null;
+
+    function ageDays(name) {
+      const ts = meta && meta.generatedAt && meta.generatedAt[name];
+      if (!ts) return null;
+      return (Date.now() - ts) / (1000 * 60 * 60 * 24);
+    }
+
+    function ageClass(days) {
+      if (days == null) return null;
+      if (days >= STALE_AFTER_DAYS) return 'stale';
+      if (days >= AGING_AFTER_DAYS) return 'aging';
+      return 'fresh';
+    }
+
+    function formatAge(days) {
+      if (days == null) return 'unknown age';
+      if (days < 1) return 'today';
+      const whole = Math.floor(days);
+      return `${whole} day${whole === 1 ? '' : 's'} ago`;
+    }
+
+    async function loadMeta() {
+      try {
+        const res = await fetch('data/meta.json');
+        if (!res.ok) throw new Error(res.status);
+        meta = await res.json();
+      } catch (e) {
+        console.warn('Could not load data/meta.json:', e);
+        meta = null;
+      }
+    }
+
+    function renderFreshnessBanner() {
+      const banner = document.getElementById('freshness-banner');
+      const entries = Object.keys(PROVIDERS)
+        .filter((name) => name in layers)
+        .map((name) => ({ name, days: ageDays(name) }));
+
+      const stale = entries.filter((e) => ageClass(e.days) === 'stale');
+      const aging = entries.filter((e) => ageClass(e.days) === 'aging');
+      const unknown = entries.filter((e) => e.days == null);
+
+      let level = 'ok';
+      if (stale.length > 0) level = 'stale';
+      else if (aging.length > 0 || unknown.length > 0) level = 'warn';
+
+      banner.className = level;
+
+      const icon = level === 'ok' ? '\u2705' : level === 'warn' ? '\u26a0\ufe0f' : '\ud83d\udd34';
+      let html = `<strong>${icon} Data freshness check (checked on load)</strong>`;
+      html += `${entries.length - stale.length - unknown.length} fresh, ${aging.length} aging, ${stale.length} stale`;
+      if (stale.length > 0) {
+        html += `<ul>${stale
+          .map((e) => `<li>${PROVIDERS[e.name].label}: ${formatAge(e.days)} \u2014 re-run <code>--refresh</code></li>`)
+          .join('')}</ul>`;
+      }
+      if (unknown.length > 0) {
+        html += `<div>No timestamp for: ${unknown.map((e) => PROVIDERS[e.name].label).join(', ')}</div>`;
+      }
+      banner.innerHTML = html;
+    }
 
     function makeMarker(color) {
       return (feature, latlng) =>
@@ -152,6 +249,11 @@
       list.innerHTML = '';
       for (const [name, cfg] of Object.entries(PROVIDERS)) {
         if (!(name in layers)) continue;
+        const days = ageDays(name);
+        const cls = ageClass(days);
+        const ageBadge = cls
+          ? `<span class="age-badge age-${cls}" title="${formatAge(days)}">${formatAge(days)}</span>`
+          : '';
         const row = document.createElement('div');
         row.className = 'provider-row';
         row.innerHTML = `
@@ -162,6 +264,7 @@
             ${cfg.isNew ? '<span class="new-badge">NEW</span>' : ''}
             <span class="count">${counts[name] ?? ''}</span>
           </label>
+          ${ageBadge}
         `;
         list.appendChild(row);
       }
@@ -189,10 +292,12 @@
     });
 
     (async () => {
+      await loadMeta();
       await Promise.all(
         Object.entries(PROVIDERS).map(([name, cfg]) => loadProvider(name, cfg))
       );
       renderPanel();
+      renderFreshnessBanner();
       document.title = `SASEcloudDC Map preview (${Object.keys(layers).length} providers)`;
     })();
   </script>
