@@ -1,0 +1,77 @@
+name: Refresh preview data (gh-pages)
+
+# Scoped to this fork only - not part of the upstream PR. Keeps the GitHub
+# Pages preview (AWS/Azure/GCP + existing SASE providers) from silently
+# going stale: re-runs the scrapers on a schedule, regenerates data/meta.json
+# with fresh timestamps, and republishes to gh-pages so the on-page
+# freshness check (index.html) has something real to compare against.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: "Checkout source branch"
+        uses: actions/checkout@v6
+        with:
+          ref: feature/aws-datacenters
+          path: source
+
+      - name: "Checkout gh-pages"
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+          path: gh-pages
+
+      - name: "Install uv"
+        uses: astral-sh/setup-uv@v8.0.0
+
+      - name: "Install the project"
+        working-directory: source
+        run: uv sync --all-extras --dev
+
+      - name: "Refresh provider data"
+        working-directory: source
+        env:
+          # write_and_post() builds an auth header unconditionally even when
+          # only --refresh is passed (no --dev/--prod). These dummy values
+          # are never sent anywhere - no --dev/--prod flag is used below -
+          # they only exist to stop that header construction from raising
+          # KeyError and deleting the just-written output as a false failure.
+          AUTH: unused-refresh-only
+          BMS: unused-refresh-only
+        run: |
+          set -e
+          for provider in aws azure gcp cloudflare zscaler netskope cisco_umbrella \
+                          paloalto fortinet iboss checkpoint catonetworks fastly oracle; do
+            echo "=== refreshing ${provider} ==="
+            uv run "provider_data/${provider}_geojson.py" --refresh \
+              || uv run "provider_data/${provider}.py" --refresh \
+              || echo "skip: ${provider} (no matching script or refresh failed)"
+          done
+
+      - name: "Publish refreshed data to gh-pages"
+        run: |
+          set -e
+          cp source/output/*.json gh-pages/data/ 2>/dev/null || true
+          python3 gh-pages/generate_meta.py
+
+      - name: "Commit and push if data changed"
+        working-directory: gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No data changes."
+          else
+            git commit -m "Scheduled refresh: update preview data ($(date -u +%Y-%m-%d))"
+            git push origin gh-pages
+          fi
