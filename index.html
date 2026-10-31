@@ -133,10 +133,16 @@
       fastly:       { label: "Fastly",                      color: "#8c1aff", defaultOn: true },
     };
 
-    const map = L.map('map').setView([20, 10], 2);
+    const map = L.map('map', {
+      worldCopyJump: false,
+      maxBounds: L.latLngBounds([-60, -190], [78, 170]),
+      maxBoundsViscosity: 0.8,
+      minZoom: 2,
+    }).setView([25, 30], 2);
     window.map = map;
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors'
+      attribution: '&copy; OpenStreetMap contributors',
+      noWrap: true,
     }).addTo(map);
 
     const layers = {};     // provider_name -> L.geoJSON layer
@@ -299,6 +305,17 @@
       renderPanel();
       renderFreshnessBanner();
       document.title = `SASEcloudDC Map preview (${Object.keys(layers).length} providers)`;
+
+      // Fixed target view: North America through Asia (covers Europe,
+      // Middle East, Africa, and South America along the way too, since
+      // they fall within this longitude span). Deliberately not fitting to
+      // the literal bounds of every marker - a couple of outliers (New
+      // Zealand, Alaska/Hawaii) stretch that to nearly a full world span,
+      // which is the "repeated globes" look this is meant to avoid.
+      map.fitBounds([
+        [-56, -170],
+        [72, 150],
+      ]);
     })();
   </script>
 </body>
